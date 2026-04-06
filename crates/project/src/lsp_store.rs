@@ -5073,6 +5073,49 @@ impl LspStore {
             .collect()
     }
 
+    /// Returns all language server IDs for the given buffer that advertise
+    /// the capability required by `request`, in user-preference order.
+    pub fn capable_language_server_ids_for_buffer<R: LspCommand>(
+        &self,
+        buffer: &Entity<Buffer>,
+        request: &R,
+        cx: &mut App,
+    ) -> Vec<LanguageServerId> {
+        let Some(local) = self.as_local() else {
+            return Vec::new();
+        };
+        let worktree_path_and_language = {
+            let buf = buffer.read(cx);
+            let file = File::from_dyn(buf.file());
+            let language = buf.language().cloned();
+            file.zip(language).map(|(file, language)| {
+                let worktree_id = file.worktree_id(cx);
+                let path: Arc<RelPath> = file
+                    .path()
+                    .parent()
+                    .map(Arc::from)
+                    .unwrap_or_else(|| file.path().clone());
+                (ProjectPath { worktree_id, path }, language)
+            })
+        };
+        let Some((worktree_path, language)) = worktree_path_and_language else {
+            return Vec::new();
+        };
+        let server_ids =
+            local.language_server_ids_for_project_path(worktree_path, &language, cx);
+        server_ids
+            .into_iter()
+            .filter_map(|server_id| match local.language_servers.get(&server_id)? {
+                LanguageServerState::Running { server, .. } => {
+                    request
+                        .check_capabilities(server.adapter_server_capabilities())
+                        .then(|| server.server_id())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn request_lsp<R>(
         &mut self,
         buffer: Entity<Buffer>,

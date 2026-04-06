@@ -75,7 +75,7 @@ pub use environment::ProjectEnvironment;
 use futures::{
     StreamExt,
     channel::mpsc::{self, UnboundedReceiver},
-    future::try_join_all,
+    future::{select_all, try_join_all},
 };
 pub use image_store::{ImageItem, ImageStore};
 use image_store::{ImageItemEvent, ImageStoreEvent};
@@ -4352,12 +4352,57 @@ impl Project {
         cx: &mut Context<Self>,
     ) -> Task<Result<PrepareRenameResponse>> {
         let position = position.to_point_utf16(buffer.read(cx));
-        self.request_lsp(
-            buffer,
-            LanguageServerToQuery::FirstCapable,
-            PrepareRename { position },
-            cx,
-        )
+        let request = PrepareRename { position };
+
+        let server_ids = self.capable_language_server_ids_for_buffer(&buffer, &request, cx);
+
+        if server_ids.len() <= 1 {
+            return self.request_lsp(
+                buffer,
+                LanguageServerToQuery::FirstCapable,
+                request,
+                cx,
+            );
+        }
+
+        let mut tasks = Vec::with_capacity(server_ids.len());
+        for server_id in server_ids {
+            tasks.push(self.request_lsp(
+                buffer.clone(),
+                LanguageServerToQuery::Other(server_id),
+                PrepareRename { position },
+                cx,
+            ));
+        }
+
+        cx.background_spawn(async move {
+            let mut remaining: Vec<_> = tasks.into_iter().map(|t| Box::pin(t)).collect();
+            let mut last_error = None;
+
+            while !remaining.is_empty() {
+                let (result, _index, rest) = select_all(remaining).await;
+                match result {
+                    Ok(PrepareRenameResponse::Success(range)) => {
+                        return Ok(PrepareRenameResponse::Success(range));
+                    }
+                    Ok(PrepareRenameResponse::OnlyUnpreparedRenameSupported) => {
+                        return Ok(PrepareRenameResponse::OnlyUnpreparedRenameSupported);
+                    }
+                    Ok(PrepareRenameResponse::InvalidPosition) => {
+                        remaining = rest;
+                    }
+                    Err(err) => {
+                        last_error = Some(err);
+                        remaining = rest;
+                    }
+                }
+            }
+
+            match last_error {
+                Some(err) => Err(err),
+                None => Ok(PrepareRenameResponse::InvalidPosition),
+            }
+        })
     }
 
     pub fn perform_rename<T: ToPointUtf16>(
@@ -4369,16 +4414,62 @@ impl Project {
     ) -> Task<Result<ProjectTransaction>> {
         let push_to_history = true;
         let position = position.to_point_utf16(buffer.read(cx));
-        self.request_lsp(
-            buffer,
-            LanguageServerToQuery::FirstCapable,
-            PerformRename {
-                position,
-                new_name,
-                push_to_history,
-            },
-            cx,
-        )
+        let request = PerformRename {
+            position,
+            new_name: new_name.clone(),
+            push_to_history,
+        };
+
+        let server_ids = self.capable_language_server_ids_for_buffer(&buffer, &request, cx);
+
+        if server_ids.len() <= 1 {
+            return self.request_lsp(
+                buffer,
+                LanguageServerToQuery::FirstCapable,
+                request,
+                cx,
+            );
+        }
+
+        let mut tasks = Vec::with_capacity(server_ids.len());
+        for server_id in server_ids {
+            tasks.push(self.request_lsp(
+                buffer.clone(),
+                LanguageServerToQuery::Other(server_id),
+                PerformRename {
+                    position,
+                    new_name: new_name.clone(),
+                    push_to_history,
+                },
+                cx,
+            ));
+        }
+
+        cx.background_spawn(async move {
+            let mut remaining: Vec<_> = tasks.into_iter().map(|t| Box::pin(t)).collect();
+            let mut last_error = None;
+
+            while !remaining.is_empty() {
+                let (result, _index, rest) = select_all(remaining).await;
+                match result {
+                    Ok(transaction) if !transaction.0.is_empty() => {
+                        return Ok(transaction);
+                    }
+                    Ok(_empty_transaction) => {
+                        remaining = rest;
+                    }
+                    Err(err) => {
+                        last_error = Some(err);
+                        remaining = rest;
+                    }
+                }
+            }
+
+            match last_error {
+                Some(err) => Err(err),
+                None => Ok(ProjectTransaction::default()),
+            }
+        })
     }
 
     pub fn on_type_format<T: ToPointUtf16>(
@@ -4472,6 +4563,17 @@ impl Project {
         cx: &mut Context<Self>,
     ) -> SearchResults<SearchResult> {
         self.search_impl(query, cx).results(cx)
+    }
+
+    fn capable_language_server_ids_for_buffer<R: LspCommand>(
+        &mut self,
+        buffer: &Entity<Buffer>,
+        request: &R,
+        cx: &mut Context<Self>,
+    ) -> Vec<LanguageServerId> {
+        self.lsp_store.update(cx, |lsp_store, cx| {
+            lsp_store.capable_language_server_ids_for_buffer(buffer, request, cx)
+        })
     }
 
     pub fn request_lsp<R: LspCommand>(

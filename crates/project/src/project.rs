@@ -242,6 +242,7 @@ pub struct Project {
     toolchain_store: Option<Entity<ToolchainStore>>,
     agent_location: Option<AgentLocation>,
     downloading_files: Arc<Mutex<HashMap<(WorktreeId, String), DownloadingFile>>>,
+    last_prepare_rename_server_id: Option<LanguageServerId>,
 }
 
 struct DownloadingFile {
@@ -1332,6 +1333,7 @@ impl Project {
 
                 agent_location: None,
                 downloading_files: Default::default(),
+                last_prepare_rename_server_id: None,
             }
         })
     }
@@ -1563,6 +1565,7 @@ impl Project {
                 toolchain_store: Some(toolchain_store),
                 agent_location: None,
                 downloading_files: Default::default(),
+                last_prepare_rename_server_id: None,
             };
 
             // remote server -> local machine handlers
@@ -1839,6 +1842,7 @@ impl Project {
                 toolchain_store: None,
                 agent_location: None,
                 downloading_files: Default::default(),
+                last_prepare_rename_server_id: None,
             };
             project.set_role(role, cx);
             for worktree in worktrees {
@@ -4273,13 +4277,19 @@ impl Project {
         position: T,
         cx: &mut Context<Self>,
     ) -> Task<Result<PrepareRenameResponse>> {
-        let position = position.to_point_utf16(buffer.read(cx));
-        self.request_lsp(
-            buffer,
-            LanguageServerToQuery::FirstCapable,
-            PrepareRename { position },
-            cx,
-        )
+        self.last_prepare_rename_server_id = None;
+        let task = self.lsp_store.update(cx, |lsp_store, cx| {
+            lsp_store.prepare_rename_across_servers(buffer, position, cx)
+        });
+        cx.spawn(async move |this, cx| {
+            let (response, server_id) = task.await?;
+            cx.update(|cx| {
+                this.update(cx, |this, _| {
+                    this.last_prepare_rename_server_id = server_id;
+                })
+            })?;
+            Ok(response)
+        })
     }
 
     pub fn perform_rename<T: ToPointUtf16>(
@@ -4291,9 +4301,13 @@ impl Project {
     ) -> Task<Result<ProjectTransaction>> {
         let push_to_history = true;
         let position = position.to_point_utf16(buffer.read(cx));
+        let server = self
+            .last_prepare_rename_server_id
+            .map(LanguageServerToQuery::Other)
+            .unwrap_or(LanguageServerToQuery::FirstCapable);
         self.request_lsp(
             buffer,
-            LanguageServerToQuery::FirstCapable,
+            server,
             PerformRename {
                 position,
                 new_name,

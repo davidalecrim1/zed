@@ -9373,7 +9373,7 @@ pub async fn apply_restored_multiworkspace_state(
     if *sidebar_open {
         window_handle
             .update(cx, |multi_workspace, _, cx| {
-                multi_workspace.restore_open_sidebar(cx);
+                multi_workspace.auto_open_sidebar(cx);
             })
             .ok();
     }
@@ -10135,7 +10135,7 @@ pub fn open_paths(
                     open_options.requesting_window = Some(window);
                     window
                         .update(cx, |multi_workspace, _, cx| {
-                            multi_workspace.open_sidebar(cx);
+                            multi_workspace.auto_open_sidebar(cx);
                         })
                         .log_err();
                 }

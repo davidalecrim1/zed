@@ -92,6 +92,50 @@ async fn test_sidebar_disabled_when_disable_ai_is_enabled(cx: &mut TestAppContex
 }
 
 #[gpui::test]
+async fn test_auto_open_sidebar_respects_starts_open_setting(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    let project = Project::test(fs, [], cx).await;
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+
+    cx.update(|_window, cx| {
+        let mut settings = AgentSettings::get_global(cx).clone();
+        settings.sidebar_starts_open = false;
+        AgentSettings::override_global(settings, cx);
+    });
+    cx.run_until_parked();
+
+    multi_workspace.update(cx, |mw, cx| {
+        mw.auto_open_sidebar(cx);
+    });
+    multi_workspace.read_with(cx, |mw, _cx| {
+        assert!(
+            !mw.sidebar_open(),
+            "auto_open_sidebar should not open the sidebar when sidebar_starts_open is false"
+        );
+    });
+
+    cx.update(|_window, cx| {
+        let mut settings = AgentSettings::get_global(cx).clone();
+        settings.sidebar_starts_open = true;
+        AgentSettings::override_global(settings, cx);
+    });
+    cx.run_until_parked();
+
+    multi_workspace.update(cx, |mw, cx| {
+        mw.auto_open_sidebar(cx);
+    });
+    multi_workspace.read_with(cx, |mw, _cx| {
+        assert!(
+            mw.sidebar_open(),
+            "auto_open_sidebar should open the sidebar when sidebar_starts_open is true (default)"
+        );
+    });
+}
+
+#[gpui::test]
 async fn test_multi_workspace_collapses_when_agent_is_disabled(cx: &mut TestAppContext) {
     init_test(cx);
     let fs = FakeFs::new(cx.executor());
@@ -291,6 +335,98 @@ async fn test_open_directory_in_empty_workspace_does_not_open_sidebar(cx: &mut T
             assert!(
                 !mw.sidebar_open(),
                 "opening a directory in a blank project via the file picker must not open the sidebar",
+            );
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn test_open_directory_in_existing_window_opens_sidebar_by_default(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let app_state = cx.update(AppState::test);
+    let fs = app_state.fs.as_fake();
+    fs.insert_tree(path!("/project_a"), json!({ "file.txt": "" }))
+        .await;
+    fs.insert_tree(path!("/project_b"), json!({ "file.txt": "" }))
+        .await;
+
+    let project = Project::test(app_state.fs.clone(), [path!("/project_a").as_ref()], cx).await;
+    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+
+    window
+        .read_with(cx, |mw, _cx| {
+            assert!(!mw.sidebar_open(), "sidebar should start closed");
+        })
+        .unwrap();
+
+    cx.update(|cx| {
+        open_paths(
+            &[PathBuf::from(path!("/project_b"))],
+            app_state,
+            OpenOptions::default(),
+            cx,
+        )
+    })
+    .await
+    .unwrap();
+
+    window
+        .read_with(cx, |mw, _cx| {
+            assert!(
+                mw.sidebar_open(),
+                "adding a directory to an existing window's sidebar should open it by default"
+            );
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn test_open_directory_in_existing_window_respects_sidebar_starts_open_setting(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+    cx.update(|cx| {
+        let mut settings = AgentSettings::get_global(cx).clone();
+        settings.sidebar_starts_open = false;
+        AgentSettings::override_global(settings, cx);
+    });
+
+    let app_state = cx.update(AppState::test);
+    let fs = app_state.fs.as_fake();
+    fs.insert_tree(path!("/project_a"), json!({ "file.txt": "" }))
+        .await;
+    fs.insert_tree(path!("/project_b"), json!({ "file.txt": "" }))
+        .await;
+
+    let project = Project::test(app_state.fs.clone(), [path!("/project_a").as_ref()], cx).await;
+    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+
+    cx.update(|cx| {
+        open_paths(
+            &[PathBuf::from(path!("/project_b"))],
+            app_state,
+            OpenOptions::default(),
+            cx,
+        )
+    })
+    .await
+    .unwrap();
+
+    window
+        .read_with(cx, |mw, _cx| {
+            assert!(
+                !mw.sidebar_open(),
+                "sidebar_starts_open: false should suppress auto-opening the sidebar \
+                 when a directory is added to an existing window"
+            );
+            assert_eq!(
+                mw.project_group_keys().len(),
+                2,
+                "the directory should still be added to the sidebar's list even though \
+                 the sidebar isn't visually open"
             );
         })
         .unwrap();

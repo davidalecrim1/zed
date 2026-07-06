@@ -478,9 +478,15 @@ impl MultiWorkspace {
         self.apply_open_sidebar(cx);
     }
 
-    /// Restores the sidebar to open state from persisted session data without
-    /// firing a telemetry event, since this is not a user-initiated action.
-    pub(crate) fn restore_open_sidebar(&mut self, cx: &mut Context<Self>) {
+    /// Opens the sidebar automatically (not as a direct result of the user
+    /// toggling it) without firing a telemetry event. Used both to restore a
+    /// previously-open sidebar on session restore, and to reveal a directory
+    /// that was just added to an existing window's sidebar. No-op when
+    /// `agent.sidebar_starts_open` is `false`.
+    pub(crate) fn auto_open_sidebar(&mut self, cx: &mut Context<Self>) {
+        if !AgentSettings::get_global(cx).sidebar_starts_open {
+            return;
+        }
         self.apply_open_sidebar(cx);
     }
 

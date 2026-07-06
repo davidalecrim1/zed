@@ -211,6 +211,15 @@ pub struct AgentSettingsContent {
     ///
     /// Default: left
     pub sidebar_side: Option<SidebarDockPosition>,
+    /// Whether the threads sidebar is allowed to open itself automatically:
+    /// when Zed starts, restoring whatever open/closed state it had when the
+    /// window was last closed, and when a directory is added to an existing
+    /// window's sidebar. When set to `false`, the sidebar never opens on its
+    /// own — directories are still added to the sidebar's list, just without
+    /// making the sidebar visible — and you can still open it manually.
+    ///
+    /// Default: true
+    pub sidebar_starts_open: Option<bool>,
     /// Default width in pixels when the agent panel is docked to the left or right.
     ///
     /// Default: 640
